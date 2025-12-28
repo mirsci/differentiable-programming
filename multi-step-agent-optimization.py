@@ -175,6 +175,7 @@ optimized_support_bot = optimizer.compile(
     max_labeled_demos=4,
 )
 print("After optimization")
+print("Change done in Docker")
 evaluate(optimized_support_bot)
 
 

@@ -10,12 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set workdir
 WORKDIR /workspace
 
-# Copy requirements and install
+
+# Copy only requirements.txt and install dependencies
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Copy all project files
-COPY . .
+# Do not copy source code; it will be mounted by the devcontainer
 
 # Default command
 CMD ["python"]
