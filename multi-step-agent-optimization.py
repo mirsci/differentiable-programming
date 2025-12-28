@@ -174,7 +174,7 @@ optimized_support_bot = optimizer.compile(
     max_bootstrapped_demos=4,
     max_labeled_demos=4,
 )
-
+print("After optimization")
 evaluate(optimized_support_bot)
 
 
