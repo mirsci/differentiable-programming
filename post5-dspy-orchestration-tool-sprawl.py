@@ -586,6 +586,20 @@ test_queries = [
     "Find Safari-related tickets, get details for SHOP-2847, and check Safari user metrics"
 ]
 
+test_memory_queries = [
+    # Simple search
+    "What tickets and documents mention mobile?",
+    
+    # Simple analyze
+    "How are mobile conversions trending?",
+
+    # Simple retrieve
+    "Get details for ticket SHOP-2847",
+    
+    # Complex reasoning:
+    "How are  the mobile conversions metrics support the mobile strategy  ?",
+]
+
 print("=" * 80)
 print("SCOUT TEST QUERIES - Memory-Enabled Intent-Based Routing")
 print("=" * 80)
@@ -595,7 +609,7 @@ print("   • Smart deduplication to prevent duplicate memories")
 print("   • Context-aware planning (uses memory to avoid re-searches)")
 print("   • Session persistence (builds knowledge over conversation)\n")
 
-for i, query in enumerate(test_queries, 1):
+for i, query in enumerate(test_memory_queries, 1):
     print(f"\n{'='*80}")
     print(f"Query {i}: {query}")
     print("=" * 80)
@@ -611,7 +625,7 @@ for i, query in enumerate(test_queries, 1):
     print()
 
 print("\n" + "=" * 80)
-print("✓ All test queries complete!")
+print("✓ All test memory queries complete!")
 print("=" * 80)
 
 
