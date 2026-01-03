@@ -1,7 +1,24 @@
 # Code for 
 # Differentiable Programming for Learnable Graphs: Optimizing Agent Workflows with DSPy
 import dspy
-# Configure your dspy LM appropriately
+import os
+import random
+import datetime as dt
+import pandas as pd
+
+# Configure pandas to display full content without truncation
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_colwidth', None)
+pd.set_option('display.width', None)
+
+# Securely load OpenAI API key from environment variable
+openai_key = os.environ.get("OPENAI_API_KEY")
+if not openai_key:
+    raise RuntimeError("OPENAI_API_KEY environment variable not set.")
+lm = dspy.LM('openai/gpt-4o-mini', api_key=openai_key)
+dspy.configure(lm=lm)
+print(f"\u2713 DSPy configured with OpenAI GPT-4o-mini (env key)")
 
 class ServiceReply(dspy.Signature):
     tag:  str = dspy.OutputField()   # eta | missing | driver | fallback
@@ -85,29 +102,29 @@ Prediction(
 # ── Tiny dataset
 
 train = [
-    Example(ticket="Order #8123 is 20 minutes late. Any ETA?",         tag="eta").with_inputs("ticket"),
-    Example(ticket="Driver stuck in traffic for order #9041.",        tag="driver").with_inputs("ticket"),
-    Example(ticket="Burger arrived but fries missing in order #6677.", tag="missing").with_inputs("ticket"),
-    Example(ticket="App shows delivered yet nothing here (#7001).",    tag="missing").with_inputs("ticket"),
-    Example(ticket="Order #5502 delayed, need update please.",         tag="eta").with_inputs("ticket"),
-    Example(ticket="I didn't get the soda in combo meal #5502.",       tag="missing").with_inputs("ticket"),
-    Example(ticket="Driver phone off — can you locate? Order #4321.",  tag="driver").with_inputs("ticket"),
-    Example(ticket="How do I cancel my late order #8890?",             tag="fallback").with_inputs("ticket"),
-    Example(ticket="Missing dipping sauce order #9988.",               tag="missing").with_inputs("ticket"),
-    Example(ticket="Order #7002 already 25 min late. Where is it?",     tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Order #8123 is 20 minutes late. Any ETA?",         tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Driver stuck in traffic for order #9041.",        tag="driver").with_inputs("ticket"),
+    dspy.Example(ticket="Burger arrived but fries missing in order #6677.", tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="App shows delivered yet nothing here (#7001).",    tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="Order #5502 delayed, need update please.",         tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="I didn't get the soda in combo meal #5502.",       tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="Driver phone off — can you locate? Order #4321.",  tag="driver").with_inputs("ticket"),
+    dspy.Example(ticket="How do I cancel my late order #8890?",             tag="fallback").with_inputs("ticket"),
+    dspy.Example(ticket="Missing dipping sauce order #9988.",               tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="Order #7002 already 25 min late. Where is it?",     tag="eta").with_inputs("ticket"),
 ]
 
 dev = [
-    Example(ticket="Order #1234 is late — where is it?",               tag="eta").with_inputs("ticket"),
-    Example(ticket="Missing fries in order #5678, need refund.",       tag="missing").with_inputs("ticket"),
-    Example(ticket="Driver got flat tire. What's new ETA for #2020?",  tag="eta").with_inputs("ticket"),
-    Example(ticket="Never got my drink with order #3003.",             tag="missing").with_inputs("ticket"),
-    Example(ticket="Order #4040 taking forever. Any update?",          tag="eta").with_inputs("ticket"),
-    Example(ticket="Is there a way to track courier? Order #5050.",    tag="driver").with_inputs("ticket"),
-    Example(ticket="Half my toppings missing on pizza #6060.",         tag="missing").with_inputs("ticket"),
-    Example(ticket="App shows delivered but nothing arrived (#7070).", tag="missing").with_inputs("ticket"),
-    Example(ticket="FAQ didn't help. Cancel late order #8080.",        tag="fallback").with_inputs("ticket"),
-    Example(ticket="What's status of order #9090? It's 30 min late.",  tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Order #1234 is late — where is it?",               tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Missing fries in order #5678, need refund.",       tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="Driver got flat tire. What's new ETA for #2020?",  tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Never got my drink with order #3003.",             tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="Order #4040 taking forever. Any update?",          tag="eta").with_inputs("ticket"),
+    dspy.Example(ticket="Is there a way to track courier? Order #5050.",    tag="driver").with_inputs("ticket"),
+    dspy.Example(ticket="Half my toppings missing on pizza #6060.",         tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="App shows delivered but nothing arrived (#7070).", tag="missing").with_inputs("ticket"),
+    dspy.Example(ticket="FAQ didn't help. Cancel late order #8080.",        tag="fallback").with_inputs("ticket"),
+    dspy.Example(ticket="What's status of order #9090? It's 30 min late.",  tag="eta").with_inputs("ticket"),
 ]
 
 # ── Simple metric function that compares predicted tags only 
@@ -117,7 +134,12 @@ def tag_match(ex, pred, trace=None):
 # ── Baseline eval
 eval_dev = dspy.Evaluate(devset=dev, metric=tag_match, num_threads=1,
                     display_progress=True, display_table=5)
-print("Zero-shot dev score:", eval_dev(SupportAgent()))
+# ── Evaluation with formatted output
+print("\n" + "="*60)
+print("ZERO-SHOT EVALUATION RESULTS")
+print("="*60)
+result = eval_dev(SupportAgent())
+print(f"Average Score: {result:.2%}" if isinstance(result, float) else f"Score: {result}")
 
 
 # simply create a DSPy optimizer that uses the training set and our LM
@@ -126,8 +148,13 @@ opt = dspy.MIPROv2(metric=tag_match, auto="light", num_threads=1)
 agent_optim = opt.compile(SupportAgent(), trainset=train,
                           requires_permission_to_run=False,
                           max_bootstrapped_demos=2, max_labeled_demos=4)
+result_opt = eval_dev(agent_optim)
 
-print("Post-opt dev score:", eval_dev(agent_optim))
+# ── Evaluation with formatted output
+print("\n" + "="*60)
+print("POST-OPT DEV RESULTS")
+print("="*60)
+print("Post-opt dev score:", result_opt)
 
 # output
 """
@@ -168,7 +195,4 @@ Bootstrapped 1 full traces after 1 examples for up to 1 rounds, amounting to 1 a
 2025/07/13 20:39:05 INFO dspy.teleprompt.mipro_optimizer_v2: == Trial 1 / 10 - Full Evaluation of Default Program ==
 Average Metric: 7.00 / 8 (87.5%): 100%|██████████| 8/8 [00:05<00:00,  1.47it/s]2025/07/13 20:39:11 INFO dspy.evaluate.evaluate: Average Metric: 7.0 / 8 (87.5%)
 2025/07/13 20:39:11 INFO dspy.teleprompt.mipro_optimizer_v2: Default program score: 87.5
-...
-
-
-
+"""

@@ -4,3 +4,4 @@ pandas
 tqdm
 matplotlib
 networkx
+openai

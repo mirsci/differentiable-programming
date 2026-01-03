@@ -3,6 +3,8 @@ import json
 from typing import List, Dict, Any
 import os
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
 
 # ============================================================================
 # SETUP: Configure DSPy with your LLM
@@ -17,8 +19,127 @@ from dataclasses import dataclass
 # Option 3: Local/Ollama
 # dspy.settings.configure(lm=dspy.LM("ollama/llama3.1", api_base="http://localhost:11434"))
 
+# Securely load OpenAI API key from environment variable
+openai_key = os.environ.get("OPENAI_API_KEY")
+if not openai_key:
+    raise RuntimeError("OPENAI_API_KEY environment variable not set.")
+lm = dspy.LM('openai/gpt-4o-mini', api_key=openai_key)
+dspy.configure(lm=lm)
+print(f"✓ DSPy configured with OpenAI GPT-4o-mini (env key)")
 print("✓ DSPy configured")
-#
+
+# ============================================================================
+# MEMORY LAYER: Session-based conversation memory with deduplication
+# ============================================================================
+
+class EntityExtraction(dspy.Signature):
+    """Extract key facts from agent output for memory storage."""
+    agent_output: str = dspy.InputField(
+        desc="Raw output from agent execution"
+    )
+    memory_fact: str = dspy.OutputField(
+        desc="Concise fact to store (max 30 words, include ALL entities)"
+    )
+
+class MemoryDeduplication(dspy.Signature):
+    """Compare new memory against existing memories."""
+    new_memory: str = dspy.InputField()
+    existing_memories: str = dspy.InputField()
+    action: str = dspy.OutputField(
+        desc="Action: NOOP (skip duplicate), ADD (store new), or UPDATE (merge with existing)"
+    )
+    reasoning: str = dspy.OutputField(desc="Why you chose that action")
+
+class ConversationMemory:
+    """Session-based memory manager for the orchestrator."""
+    
+    def __init__(self, session_id: str = None):
+        self.session_id = session_id or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.memories = []  # List of {fact, timestamp, source, hash}
+        self.extractor = dspy.Predict(EntityExtraction)
+        self.deduplicator = dspy.Predict(MemoryDeduplication)
+        print(f"🧠 Memory initialized for session: {self.session_id}")
+    
+    def extract_facts(self, agent_output: str) -> str:
+        """Extract key facts from agent output using LLM."""
+        result = self.extractor(agent_output=agent_output)
+        return result.memory_fact
+    
+    def _hash_memory(self, fact: str) -> str:
+        """Generate hash for memory deduplication."""
+        return hashlib.md5(fact.lower().strip().encode()).hexdigest()
+    
+    def _should_store(self, new_fact: str) -> bool:
+        """Check if fact is worth storing (non-empty and meaningful)."""
+        return len(new_fact.strip()) > 10 and not any(
+            word in new_fact.lower() for word in ['error', 'failed', 'exception']
+        )
+    
+    def add_memory(self, agent_output: str, source: str) -> bool:
+        """
+        🧠 MEMORY STORAGE: Automatically extract and store session facts.
+        
+        Flow:
+        1. Extract concise facts from verbose agent outputs
+        2. Check for duplicates using LLM comparison
+        3. Merge or add based on deduplication rules
+        
+        Returns: True if memory was stored, False if skipped as duplicate
+        """
+        # Step 1: Extract facts
+        fact = self.extract_facts(agent_output)
+        
+        if not self._should_store(fact):
+            return False
+        
+        # Step 2: Check for duplicates
+        if self.memories:
+            existing_facts = "\n".join([m['fact'] for m in self.memories[-5:]])  # Check recent 5
+            dedup_result = self.deduplicator(
+                new_memory=fact,
+                existing_memories=existing_facts
+            )
+            
+            if dedup_result.action == "NOOP":
+                return False
+        
+        # Step 3: Store memory
+        memory_entry = {
+            'fact': fact,
+            'timestamp': datetime.now().isoformat(),
+            'source': source,
+            'hash': self._hash_memory(fact)
+        }
+        self.memories.append(memory_entry)
+        print(f"   ✅ Stored: {fact[:60]}...")
+        return True
+    
+    def recall_context(self, query: str = None, limit: int = 5) -> str:
+        """
+        🧠 CRITICAL: Retrieve previous investigation context FIRST before starting new work!
+        
+        Returns what we've already learned in this session:
+        - Previously identified entities, companies, issues
+        - Earlier findings and analysis results
+        - Context from follow-up questions
+        
+        ⚡ Saves time: Don't re-search what we already know!
+        """
+        if not self.memories:
+            return "No previous context in memory."
+        
+        # Return most recent memories
+        recent = self.memories[-limit:]
+        context_lines = [f"  • {m['fact']} (from {m['source']})" for m in recent]
+        return "\n".join(context_lines)
+    
+    def get_session_summary(self) -> str:
+        """Get a summary of all memories in this session."""
+        if not self.memories:
+            return "No memories recorded yet."
+        return f"Session: {self.session_id}\nMemories: {len(self.memories)}\n" + self.recall_context(limit=10)
+
+print("✓ Memory layer initialized\n")
 # ============================================================================
 # MOCK DATA
 # ============================================================================
@@ -304,23 +425,34 @@ print("✓ Specialized agents initialized\n")
 # ============================================================================
 
 class QueryPlanning(dspy.Signature):
-    """Decompose a user question into an execution plan.
+    """Create an execution plan by understanding data dependencies and session context.
+    
+    🔗 DATA DEPENDENCY RULES:
+    - Analyze can work STANDALONE (accesses database directly with filters)
+    - If entities are already in memory, go straight to analyze (avoid re-search)
     
     Intent types:
-    - search: Find relevant tickets or docs using keywords
+    - search: Find relevant tickets or docs using keywords (when context is missing)
     - retrieve: Get specific items by ID (ticket numbers, doc keys)
-    - analyze: Analyze metrics, trends, or compare data
+    - analyze: Analyze metrics, trends, or compare data (preferred if data is known)
     """
     question: str = dspy.InputField()
     available_intents: str = dspy.InputField()
+    conversation_context: str = dspy.InputField(
+        desc="Previous findings and context from memory (if any). Use this to avoid re-searching!"
+    )
     plan: List[dict] = dspy.OutputField(
         desc="List of dicts with keys: subquery (str), intent (str: search/retrieve/analyze)"
     )
 
 class ScoutOrchestrator(dspy.Module):
-    def __init__(self):
+    def __init__(self, enable_memory: bool = True):
         super().__init__()
         self.planner = dspy.ChainOfThought(QueryPlanning)
+        
+        # Memory layer
+        self.memory_enabled = enable_memory
+        self.memory = ConversationMemory() if enable_memory else None
         
         # Intent-based agent registry
         self.agents = {
@@ -333,21 +465,34 @@ class ScoutOrchestrator(dspy.Module):
         self.intent_descriptions = """
 Available intents:
 - search: Use when you need to FIND tickets or docs using keywords (e.g., "find Safari issues", "search for checkout docs")
+  ⚠️ PREREQUISITE: Only use if entity is NOT already in conversation memory
 - retrieve: Use when you have specific IDs and need DETAILS (e.g., "get ticket SHOP-2847", "get doc checkout-rewrite")
 - analyze: Use when you need to examine METRICS or TRENDS (e.g., "how are conversions trending?", "compare mobile vs desktop")
+  ✅ CAN RUN STANDALONE: Works immediately, no search prerequisite needed
 
 Examples:
-- "What tickets are about Safari?" → search
+- "What tickets are about Safari?" → search (first time)
 - "Get details for SHOP-2847" → retrieve
 - "Are mobile conversions down?" → analyze
-- "Find checkout issues and check if conversions dropped" → search (find issues), analyze (check metrics)
+- "What about EQUIFAX?" → analyze (if EQUIFAX in memory) or search (if not known)
         """.strip()
     
     def forward(self, question: str):
-        # Generate plan
+        # Retrieve conversation context from memory
+        conversation_context = ""
+        if self.memory_enabled:
+            print("\n🧠 Checking memory...")
+            conversation_context = self.memory.recall_context()
+            if "No previous" not in conversation_context:
+                print("   ✅ Found relevant context in memory:")
+                for line in conversation_context.split('\n')[:3]:  # Show first 3
+                    print(f"      {line}")
+        
+        # Generate plan with context awareness
         plan_result = self.planner(
             question=question,
-            available_intents=self.intent_descriptions
+            available_intents=self.intent_descriptions,
+            conversation_context=conversation_context or "No previous context yet"
         )
         
         # Convert to PlanStep objects
@@ -382,6 +527,13 @@ Examples:
                 "answer": result.answer
             })
             
+            # Store findings in memory for future queries
+            if self.memory_enabled:
+                self.memory.add_memory(
+                    agent_output=result.answer,
+                    source=f"{step.intent}_agent"
+                )
+            
             # Build context for next step
             accumulated_context += f"\nStep {i} ({step.intent}): {result.answer}\n"
         
@@ -401,7 +553,7 @@ Examples:
             step_results=step_results
         )
 
-print("✓ Orchestrator initialized\n")
+print("✓ Memory-Enabled Orchestrator initialized\n")
 
 
 
@@ -409,7 +561,7 @@ print("✓ Orchestrator initialized\n")
 # TEST QUERIES
 # ============================================================================
 
-scout = ScoutOrchestrator()
+scout = ScoutOrchestrator(enable_memory=True)
 
 test_queries = [
     # Simple search
@@ -435,8 +587,13 @@ test_queries = [
 ]
 
 print("=" * 80)
-print("SCOUT TEST QUERIES - Intent-Based Routing")
+print("SCOUT TEST QUERIES - Memory-Enabled Intent-Based Routing")
 print("=" * 80)
+print("\n🧠 Memory features enabled:")
+print("   • Automatic fact extraction from agent outputs")
+print("   • Smart deduplication to prevent duplicate memories")
+print("   • Context-aware planning (uses memory to avoid re-searches)")
+print("   • Session persistence (builds knowledge over conversation)\n")
 
 for i, query in enumerate(test_queries, 1):
     print(f"\n{'='*80}")
@@ -614,4 +771,3 @@ These trends suggest that the Safari checkout issue is impacting user engagement
 ✓ All test queries complete!
 ================================================================================
 """
-`
